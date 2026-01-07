@@ -1,0 +1,761 @@
+--[[
+	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
+]]
+repeat task.wait() until game:IsLoaded()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local cloneref = cloneref or function(v) return v end
+local player = Players.LocalPlayer
+local Char = player.Character or player.CharacterAdded:Wait()
+local Hum = cloneref(Char:WaitForChild("Humanoid")) or cloneref(Char:FindFirstChild("Humanoid"))
+local Hrp = cloneref(Char:WaitForChild("HumanoidRootPart")) or cloneref(Char:FindFirstChild("HumanoidRootPart"))
+
+local magnetEnabled = false
+local magnetDistance = 0
+local showHitbox = false
+local hitboxPart = nil
+
+local swatEnabled = false
+local swatRadius = 0
+
+local cframeWalkEnabled = false
+local cframeWalkSpeed = 0
+
+local infiniteJumpEnabled = false
+local jumpPowerEnabled = false
+local customJumpPower = 0
+
+local autoFlagEnabled = false
+local autoFlagRadius = 0
+
+local autoTouchdownEnabled = false
+local targetEndzone = "Endzone1"
+
+local pullVectorDistance = 10
+local pullVectorEnabled = false
+
+local ballCarrierEnabled = false
+local autoCatchEnabled = false
+local autoCatchRadius = 15
+
+local freezeTechEnabled = false
+local freezeTechDuration = 0.5
+
+local clickTackleEnabled = false
+local clickTackleRadius = 0
+
+local cachedBall = nil
+local cachedFootball = nil
+local cachedEndzone = nil
+local lastCacheUpdate = 0
+local CACHE_INTERVAL = 0.5
+
+local bcMode = ""
+
+local function findBall()
+    if cachedBall and cachedBall.Parent then
+        return cachedBall
+    end
+    
+    for _, v in ipairs(workspace:GetChildren()) do
+        if v:IsA("MeshPart") and v.Name == "Ball" then
+            cachedBall = v
+            return v
+        end
+    end
+    
+    cachedBall = nil
+    return nil
+end
+
+local function findFootball()
+    if cachedFootball and cachedFootball.Parent then
+        return cachedFootball
+    end
+    
+    local football = workspace:FindFirstChild("Football")
+    if football and football:IsA("MeshPart") then
+        cachedFootball = football
+        return football
+    end
+    
+    cachedFootball = nil
+    return nil
+end
+
+local function createHitbox()
+    if hitboxPart then
+        hitboxPart:Destroy()
+    end
+    
+    hitboxPart = Instance.new("Part")
+    hitboxPart.Name = "MagnetHitbox"
+    hitboxPart.Size = Vector3.new(magnetDistance * 2, magnetDistance * 2, magnetDistance * 2)
+    hitboxPart.Anchored = true
+    hitboxPart.CanCollide = false
+    hitboxPart.Transparency = 0.5
+    hitboxPart.Material = Enum.Material.ForceField
+    hitboxPart.Color = Color3.fromRGB(138, 43, 226)
+    hitboxPart.CastShadow = false
+    hitboxPart.Shape = Enum.PartType.Ball
+    hitboxPart.Parent = workspace
+    
+    return hitboxPart
+end
+
+local function removeHitbox()
+    if hitboxPart then
+        hitboxPart:Destroy()
+        hitboxPart = nil
+    end
+end
+
+local function updateHitbox()
+    if showHitbox and magnetEnabled and Hrp then
+        local ball = findBall()
+        
+        if ball then
+            if not hitboxPart then
+                createHitbox()
+            end
+            if hitboxPart then
+                hitboxPart.CFrame = ball.CFrame
+                hitboxPart.Size = Vector3.new(magnetDistance * 2, magnetDistance * 2, magnetDistance * 2)
+            end
+        else
+            removeHitbox()
+        end
+    elseif hitboxPart then
+        removeHitbox()
+    end
+end
+
+local function findEndzone()
+    if cachedEndzone and cachedEndzone.Parent then
+        return cachedEndzone
+    end
+    
+    local minigames = workspace:FindFirstChild("Minigames")
+    if not minigames then return nil end
+    
+    for _, minigame in ipairs(minigames:GetChildren()) do
+        local localFolder = minigame:FindFirstChild("Local")
+        if localFolder then
+            local design = localFolder:FindFirstChild("Design")
+            if design then
+                local endzone = design:FindFirstChild(targetEndzone)
+                if endzone and endzone:IsA("BasePart") then
+                    cachedEndzone = endzone
+                    return endzone
+                end
+            end
+        end
+    end
+    
+    cachedEndzone = nil
+    return nil
+end
+
+local function playerHasBall()
+    if not Char then return false end
+    return Char:FindFirstChild("Ball") ~= nil
+end
+
+local function findBallCarrier()
+    for _, model in ipairs(workspace:GetChildren()) do
+        if model:IsA("Model") and model ~= Char and model:FindFirstChild("Ball") then
+            return model
+        end
+    end
+    return nil
+end
+
+local function simulateClick()
+    local camera = workspace.CurrentCamera
+    local viewportSize = camera.ViewportSize
+    local centerX = viewportSize.X / 2
+    local centerY = viewportSize.Y / 2
+    
+    VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
+    task.wait(0.01)
+    VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
+end
+
+local function onBallAdded(ball)
+    if not freezeTechEnabled then return end
+    if not ball:IsA("MeshPart") then return end
+    
+    ball.Anchored = true
+    if ball:FindFirstChild("BodyVelocity") then
+        ball.BodyVelocity:Destroy()
+    end
+    ball.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    ball.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    
+    task.wait(freezeTechDuration)
+    
+    if ball and ball.Parent then
+        ball.Anchored = false
+    end
+end
+
+local lastSwatTime = 0
+local lastFlagTime = 0
+local SWAT_COOLDOWN = 0.1
+local FLAG_COOLDOWN = 0.1
+
+RunService.Heartbeat:Connect(function(deltaTime)
+    local currentTime = tick()
+    
+    if currentTime - lastCacheUpdate > CACHE_INTERVAL then
+        lastCacheUpdate = currentTime
+        findBall()
+        findFootball()
+    end
+    
+    if not Hrp then return end
+    
+    updateHitbox()
+    
+    if magnetEnabled then
+        local ball = cachedBall
+        if ball then
+            local dist = (Hrp.Position - ball.Position).Magnitude
+            if dist <= magnetDistance then
+                firetouchinterest(Hrp, ball, 0)
+                firetouchinterest(Hrp, ball, 1)
+            end
+        end
+    end
+    
+    if swatEnabled and (currentTime - lastSwatTime) > SWAT_COOLDOWN then
+        local ball = cachedBall
+        if ball then
+            local dist = (Hrp.Position - ball.Position).Magnitude
+            if dist <= swatRadius then
+                lastSwatTime = currentTime
+                pcall(function()
+                    ReplicatedStorage.Packages.Knit.Services.SessionService.RF.PerformAction:InvokeServer("Swat")
+                end)
+            end
+        end
+    end
+    
+    if autoFlagEnabled and (currentTime - lastFlagTime) > FLAG_COOLDOWN then
+        local ball = cachedBall
+        if ball then
+            local dist = (Hrp.Position - ball.Position).Magnitude
+            if dist <= autoFlagRadius then
+                lastFlagTime = currentTime
+                pcall(function()
+                    ReplicatedStorage.Packages.Knit.Services.SessionService.RF.PerformAction:InvokeServer("Reach for Flag")
+                end)
+            end
+        end
+    end
+    
+    if autoTouchdownEnabled and playerHasBall() then
+        local endzone = findEndzone()
+        if endzone then
+            Hrp.CFrame = endzone.CFrame + Vector3.new(0, 5, 0)
+        end
+    end
+    
+    if autoCatchEnabled then
+        local football = cachedFootball
+        if football then
+            local dist = (Hrp.Position - football.Position).Magnitude
+            if dist <= autoCatchRadius then
+                simulateClick()
+            end
+        end
+    end
+    
+    if cframeWalkEnabled then
+        local humanoid = Char and Char:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            local moveVec = humanoid.MoveDirection
+            if moveVec.Magnitude > 0 then
+                Hrp.CFrame = Hrp.CFrame + (moveVec.Unit * cframeWalkSpeed * deltaTime)
+            end
+        end
+    end
+    
+    if ballCarrierEnabled then
+        local carrier = findBallCarrier()
+        if carrier and carrier:FindFirstChild("HumanoidRootPart") then
+            if bcMode == "Blatant" then
+                Hrp.CFrame = carrier.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+            elseif bcMode == "Legit" then
+                local hum = Hrp.Parent:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    local target = carrier.HumanoidRootPart.Position
+                    local dist = (Hrp.Position - target).Magnitude
+                    if dist > 4 then
+                        hum:MoveTo(target)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+player.CharacterAdded:Connect(function(character)
+    character.ChildAdded:Connect(function(child)
+        if child.Name == "Ball" then
+            onBallAdded(child)
+        end
+    end)
+    
+    local existingBall = character:FindFirstChild("Ball")
+    if existingBall then
+        onBallAdded(existingBall)
+    end
+end)
+
+if player.Character then
+    local character = player.Character
+    character.ChildAdded:Connect(function(child)
+        if child.Name == "Ball" then
+            onBallAdded(child)
+        end
+    end)
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if not pullVectorEnabled then return end
+    if not Hrp then return end
+    
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        local ball = workspace:FindFirstChild("Ball")
+        if ball and ball:IsA("MeshPart") then
+            local direction = (ball.Position - Hrp.Position).Unit
+            Hrp.CFrame = CFrame.new(ball.Position - (direction * pullVectorDistance), ball.Position)
+        end
+    end
+end)
+
+UserInputService.JumpRequest:Connect(function()
+    if not infiniteJumpEnabled then return end
+    if Hum then
+        Hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end)
+
+local jumpConnection = nil
+
+local function setupJumpPower()
+    if jumpConnection then jumpConnection:Disconnect() end
+    jumpConnection = Hum.Jumping:Connect(function()
+        if jumpPowerEnabled and Hrp then
+            local jumpVelocity = Vector3.new(0, customJumpPower, 0)
+            Hrp.Velocity = Vector3.new(Hrp.Velocity.X, 0, Hrp.Velocity.Z) + jumpVelocity
+        end
+    end)
+end
+
+player.CharacterAdded:Connect(function(newChar)
+    Char = newChar
+    Hrp = newChar:WaitForChild('HumanoidRootPart')
+    Hum = newChar:WaitForChild('Humanoid')
+    removeHitbox()
+    cachedBall = nil
+    cachedFootball = nil
+    cachedEndzone = nil
+    if jumpPowerEnabled then
+        setupJumpPower()
+    end
+end)
+
+local function TackleClicked()
+    if not clickTackleEnabled then return end
+    local Bc = findBallCarrier()
+    if not Bc then return end
+if Players:FindFirstChild(Bc.Name) and Players:FindFirstChild(Bc.Name) ~= Plr.Name then
+    if Bc and Players:FindFirstChild(Bc.Name) then
+        local TargetHrp = Players:FindFirstChild(Bc.Name).Character:FindFirstChild("HumanoidRootPart")
+        if TargetHrp and Hrp then
+            local dist = (Hrp.Position - TargetHrp.Position).Magnitude
+            if dist <= clickTackleRadius then
+                Hrp.CFrame = TargetHrp.CFrame
+            end
+            end
+        end
+    end
+end
+
+
+local function detectClick()
+    UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+
+        if input.UserInputType == Enum.UserInputType.MouseButton1 
+        or input.UserInputType == Enum.UserInputType.Touch then
+            TackleClicked()
+        end
+    end)
+end
+
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+local Window = Library:CreateWindow({
+    Title = "Fate Hub",
+    Footer = "by @wrl11 & @aylonthegiant | discord.gg/epNcR8Ce89",
+    NotifySide = "Right",
+    ShowCustomCursor = false,
+    Mobile = {
+        Enabled = true,
+        Title = "Fate Hub",
+        Icon = "rbxassetid://10723434711"
+    }
+})
+
+local Tabs = {
+    Catching = Window:AddTab("Catching", "hand"),
+    Player = Window:AddTab("Player", "user"),
+    Misc = Window:AddTab("Misc", "badge-question-mark"),
+    ["UI Settings"] = Window:AddTab("UI Settings", "monitor"),
+}
+
+local MagnetGroup = Tabs.Catching:AddLeftGroupbox("Mags")
+local AutoCatchGroup = Tabs.Catching:AddLeftGroupbox("Auto Catch")
+local SwatGroup = Tabs.Catching:AddRightGroupbox("Auto Swat")
+local FlagGroup = Tabs.Catching:AddLeftGroupbox("Auto Flag")
+local TouchdownGroup = Tabs.Catching:AddRightGroupbox("Auto Touchdown")
+local PullVectorGroup = Tabs.Catching:AddLeftGroupbox("Pull Vector")
+local FreezeTechGroup = Tabs.Catching:AddRightGroupbox("Freeze Tech")
+
+local SpeedGroup = Tabs.Player:AddLeftGroupbox("Speed")
+local JumpGroup = Tabs.Player:AddRightGroupbox("Jumping")
+
+local BallCarrierGroup = Tabs.Misc:AddLeftGroupbox("Ball Carrier")
+local ClickTackleGroup = Tabs.Misc:AddRightGroupbox("Click Tackle")
+
+local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+
+MagnetGroup:AddToggle("BallMagnet", {
+    Text = "Football Magnet",
+    Default = false,
+    Callback = function(value)
+        magnetEnabled = value
+        if not value then
+            removeHitbox()
+        end
+    end
+})
+
+MagnetGroup:AddSlider("MagnetDistance", {
+    Text = "Magnet Distance",
+    Default = 0,
+    Min = 10,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(value)
+        magnetDistance = value
+    end
+})
+
+MagnetGroup:AddToggle("ShowHitbox", {
+    Text = "Visualize Mag Hitbox",
+    Default = false,
+    Callback = function(value)
+        showHitbox = value
+        if not value then
+            removeHitbox()
+        end
+    end
+})
+
+AutoCatchGroup:AddToggle("AutoCatch", {
+    Text = "Auto Catch",
+    Default = false,
+    Callback = function(value)
+        autoCatchEnabled = value
+    end
+})
+
+AutoCatchGroup:AddSlider("AutoCatchRadius", {
+    Text = "Catch Radius",
+    Default = 15,
+    Min = 5,
+    Max = 50,
+    Rounding = 0,
+    Callback = function(value)
+        autoCatchRadius = value
+    end
+})
+
+FreezeTechGroup:AddToggle("FreezeTech", {
+    Text = "Freeze Tech",
+    Default = false,
+    Callback = function(value)
+        freezeTechEnabled = value
+    end
+})
+
+FreezeTechGroup:AddSlider("FreezeTechDuration", {
+    Text = "Freeze Duration",
+    Default = 0.5,
+    Min = 0.1,
+    Max = 2,
+    Rounding = 1,
+    Callback = function(value)
+        freezeTechDuration = value
+    end
+})
+
+SwatGroup:AddToggle("AutoSwat", {
+    Text = "Auto Swat",
+    Default = false,
+    Callback = function(value)
+        swatEnabled = value
+    end
+})
+
+SwatGroup:AddSlider("SwatRadius", {
+    Text = "Swat Radius",
+    Default = 0,
+    Min = 10,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(value)
+        swatRadius = value
+    end
+})
+
+FlagGroup:AddToggle("AutoFlag", {
+    Text = "Auto Flag Pull",
+    Default = false,
+    Callback = function(value)
+        autoFlagEnabled = value
+    end
+})
+
+FlagGroup:AddSlider("FlagRadius", {
+    Text = "Pull Radius",
+    Default = 0,
+    Min = 10,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(value)
+        autoFlagRadius = value
+    end
+})
+
+TouchdownGroup:AddToggle("AutoTouchdown", {
+    Text = "Auto Touchdown",
+    Default = false,
+    Callback = function(value)
+        autoTouchdownEnabled = value
+    end
+})
+
+TouchdownGroup:AddDropdown("EndzoneSelect", {
+    Values = { "Endzone1", "Endzone2" },
+    Default = "Endzone1",
+    Text = "Target Endzone",
+    Callback = function(value)
+        targetEndzone = value
+        cachedEndzone = nil
+    end
+})
+
+PullVectorGroup:AddToggle("PullVectorToggle", {
+    Text = "Enable Pull Vector [M1]",
+    Default = false,
+    Callback = function(value)
+        pullVectorEnabled = value
+    end
+})
+
+PullVectorGroup:AddSlider("PullVectorDistance", {
+    Text = "Pull Distance",
+    Default = 10,
+    Min = 5,
+    Max = 50,
+    Rounding = 0,
+    Callback = function(value)
+        pullVectorDistance = value
+    end
+})
+
+SpeedGroup:AddToggle("CFrameWalk", {
+    Text = "CFrame Walk",
+    Default = false,
+    Callback = function(value)
+        cframeWalkEnabled = value
+    end
+})
+
+SpeedGroup:AddSlider("CFrameSpeed", {
+    Text = "CFrame Speed",
+    Default = 0,
+    Min = 16,
+    Max = 80,
+    Rounding = 0,
+    Callback = function(value)
+        cframeWalkSpeed = value
+    end
+})
+
+JumpGroup:AddToggle("InfiniteJump", {
+    Text = "Infinite Jump",
+    Default = false,
+    Callback = function(value)
+        infiniteJumpEnabled = value
+    end
+})
+
+JumpGroup:AddToggle("JumpPower", {
+    Text = "Jump Power",
+    Default = false,
+    Callback = function(value)
+        jumpPowerEnabled = value
+        if value then
+            setupJumpPower()
+        else
+            if jumpConnection then jumpConnection:Disconnect() end
+            jumpConnection = nil
+        end
+    end
+})
+
+JumpGroup:AddSlider("JumpHeight", {
+    Text = "Jump Height",
+    Default = 0,
+    Min = 10,
+    Max = 250,
+    Rounding = 0,
+    Callback = function(value)
+        customJumpPower = value
+    end
+})
+
+BallCarrierGroup:AddToggle("BallCarrier", {
+    Text = "Follow Ball Carrier",
+    Default = false,
+    Callback = function(v)
+        ballCarrierEnabled = v
+    end
+})
+
+BallCarrierGroup:AddDropdown("BallCarrierMode", {
+    Values = { "Blatant", "Legit" },
+    Default = "",
+    Text = "Follow Mode",
+    Tooltip = "Choose how to follow the ball carrier",
+    Callback = function(v)
+        bcMode = v
+    end
+})
+
+ClickTackleGroup:AddToggle("ClickTackle", {
+    Text = "Click Tackle",
+    Default = false,
+    Callback = function(value)
+        clickTackleEnabled = value
+        if value then
+            detectClick()
+        end
+    end
+})
+
+ClickTackleGroup:AddSlider("ClickTackleRadius", {
+    Text = "Tackle Radius",
+    Default = 0,
+    Min = 10,
+    Max = 150,
+    Rounding = 0,
+    Callback = function(value)
+        clickTackleRadius = value
+    end
+})
+
+MenuGroup:AddToggle("KeybindMenuOpen", {
+    Default = Library.KeybindFrame.Visible,
+    Text = "Open Keybind Menu",
+    Callback = function(value)
+        Library.KeybindFrame.Visible = value
+    end,
+})
+
+MenuGroup:AddToggle("ShowCustomCursor", {
+    Text = "Custom Cursor",
+    Default = false,
+    Callback = function(Value)
+        Library.ShowCustomCursor = Value
+    end,
+})
+
+MenuGroup:AddDropdown("NotificationSide", {
+    Values = { "Left", "Right" },
+    Default = "Right",
+    Text = "Notification Side",
+    Callback = function(Value)
+        Library:SetNotifySide(Value)
+    end,
+})
+
+MenuGroup:AddDivider()
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { 
+    Default = "LeftControl", 
+    NoUI = true, 
+    Text = "Menu keybind" 
+})
+
+MenuGroup:AddButton({
+    Text = "Unload",
+    Func = function()
+        Library:Unload()
+    end
+})
+
+Library.ToggleKeybind = Options.MenuKeybind
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("Fate Hub")
+SaveManager:SetFolder("FateHub/Game")
+
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+
+Library:Notify({
+    Title = "Fate Hub",
+    Description = "Script loaded successfully!",
+    Time = 5,
+})
+
+Library:OnUnload(function()
+    magnetEnabled = false
+    swatEnabled = false
+    autoFlagEnabled = false
+    autoTouchdownEnabled = false
+    pullVectorEnabled = false
+    cframeWalkEnabled = false
+    infiniteJumpEnabled = false
+    jumpPowerEnabled = false
+    ballCarrierEnabled = false
+    autoCatchEnabled = false
+    freezeTechEnabled = false
+    clickTackleEnabled = false
+    
+    if jumpConnection then
+        jumpConnection:Disconnect()
+    end
+    removeHitbox()
+end)
